@@ -45,6 +45,17 @@ curl -s http://127.0.0.1:8787/health
 
 Use a different port if 8787 is taken: `PORT=9000 sh ./start.sh`.
 
+**Decide whether to require a token (your call as the coordinator):**
+
+- All agents on this one machine, only you running them → start with **no token**.
+  The localhost guard already blocks browsers/remote callers, and skipping the
+  token keeps the curl snippets clean.
+- Shared/multi-user host, or you will expose it remotely (ngrok) → **set a token**
+  so every request must authenticate (see "expose to a remote agent" below).
+
+If unsure, start without a token; you can stop and restart with `TUNNEL_TOKEN`
+set at any time.
+
 ## Step 2 — Subscribe yourself (the coordinator)
 
 Pick an id for yourself, e.g. `claude`:
