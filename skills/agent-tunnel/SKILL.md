@@ -26,10 +26,15 @@ short subscribe snippet that you generate.
 
 ## Step 1 — Start the broker
 
-Run the start script (it launches the broker in the background and returns immediately):
+Run the bundled `start.sh` **from this skill's own directory** (it launches the
+broker in the background and returns immediately). The directory depends on how
+the skill was obtained:
+
+- Installed via `npx skills add` → `.agents/skills/agent-tunnel/`
+- Cloned source repo → `skills/agent-tunnel/`
 
 ```sh
-sh skills/agent-tunnel/start.sh
+cd <this-skill-dir> && sh ./start.sh        # e.g. cd .agents/skills/agent-tunnel
 ```
 
 This prints the URL, e.g. `http://127.0.0.1:8787`. Confirm it is up:
@@ -38,7 +43,7 @@ This prints the URL, e.g. `http://127.0.0.1:8787`. Confirm it is up:
 curl -s http://127.0.0.1:8787/health
 ```
 
-Use a different port if 8787 is taken: `PORT=9000 sh skills/agent-tunnel/start.sh`.
+Use a different port if 8787 is taken: `PORT=9000 sh ./start.sh`.
 
 ## Step 2 — Subscribe yourself (the coordinator)
 
@@ -141,8 +146,9 @@ Share the `https://<id>.ngrok-free.app` forwarding URL in place of
 ## Stopping
 
 ```sh
-sh skills/agent-tunnel/stop.sh
+cd <this-skill-dir> && sh ./stop.sh
 ```
 
-State (agents + messages) persists in `skills/agent-tunnel/state.json`, so a
-restart resumes the same conversation. Delete that file to start clean.
+State (agents + messages) persists in `state.json` inside this skill's
+directory, so a restart resumes the same conversation. Delete that file to start
+clean.
