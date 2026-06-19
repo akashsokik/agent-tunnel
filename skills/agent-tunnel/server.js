@@ -25,6 +25,9 @@ const STARTED_AT = Date.now();
 // set, the broker enforces a localhost-only, browser-hostile guard instead.
 const TOKEN = process.env.TUNNEL_TOKEN || '';
 
+// Long-poll watchers parked on /inbox?wait=N, woken when a matching message arrives.
+const waiters = [];
+
 // ---------------------------------------------------------------------------
 // State
 //   seq      - monotonically increasing message counter
@@ -229,12 +232,43 @@ async function handleSend(req, res) {
   if (state.agents[from]) state.agents[from].lastSeen = message.ts;
   save();
 
+  // Wake any long-poll watchers this message is addressed to.
+  for (const w of waiters.slice()) {
+    if (!w.done && w.id !== message.from && (message.to === 'all' || message.to === w.id)) {
+      w.finish();
+    }
+  }
+
   reply(res, 200, { ok: true, seq: message.seq, message });
 }
 
-function handleInbox(res, query) {
+// Messages addressed to `id` it has not consumed yet (directed or broadcast,
+// never its own).
+function unreadFor(agent, id) {
+  return state.messages.filter(
+    (m) => m.seq > agent.cursor && m.from !== id && (m.to === id || m.to === 'all')
+  );
+}
+
+// Send the inbox response and advance the agent's cursor past what was returned.
+function deliverInbox(res, agent, id, peek, messages) {
+  agent.lastSeen = nowIso();
+  if (!peek && messages.length > 0) {
+    // Advance only to the highest seq actually returned, so a message assigned a
+    // higher seq later is never silently skipped.
+    agent.cursor = messages[messages.length - 1].seq;
+  }
+  save(); // persist cursor / lastSeen
+  reply(res, 200, { ok: true, id, count: messages.length, messages });
+}
+
+function handleInbox(req, res, query) {
   const id = query.get('id');
   const peek = query.get('peek') === 'true';
+  let wait = parseInt(query.get('wait') || '0', 10);
+  if (!Number.isFinite(wait) || wait < 0) wait = 0;
+  if (wait > 60) wait = 60; // cap long-poll duration
+
   if (!isValidId(id)) {
     return reply(res, 400, { ok: false, error: 'id query param required' });
   }
@@ -243,19 +277,32 @@ function handleInbox(res, query) {
     return reply(res, 404, { ok: false, error: `unknown agent "${id}" -- POST /subscribe first` });
   }
 
-  const messages = state.messages.filter(
-    (m) => m.seq > agent.cursor && m.from !== id && (m.to === id || m.to === 'all')
-  );
-
-  agent.lastSeen = nowIso();
-  if (!peek && messages.length > 0) {
-    // Advance only to the highest seq actually returned to this caller, so a
-    // message assigned a higher seq later is never silently skipped.
-    agent.cursor = messages[messages.length - 1].seq;
+  const messages = unreadFor(agent, id);
+  if (messages.length > 0 || peek || wait === 0) {
+    return deliverInbox(res, agent, id, peek, messages); // immediate (default)
   }
-  save(); // persist cursor / lastSeen
 
-  reply(res, 200, { ok: true, id, count: messages.length, messages });
+  // Long-poll: hold the connection open until handleSend wakes us with a matching
+  // message, or `wait` seconds elapse -- whichever comes first.
+  const waiter = { id, done: false, timer: null };
+  const detach = () => {
+    waiter.done = true;
+    clearTimeout(waiter.timer);
+    const i = waiters.indexOf(waiter);
+    if (i !== -1) waiters.splice(i, 1);
+  };
+  waiter.finish = () => {
+    if (waiter.done) return;
+    detach();
+    deliverInbox(res, agent, id, false, unreadFor(agent, id));
+  };
+  waiter.cancel = () => {
+    if (waiter.done) return;
+    detach(); // client hung up; nothing to send
+  };
+  waiter.timer = setTimeout(waiter.finish, wait * 1000);
+  req.on('close', waiter.cancel);
+  waiters.push(waiter);
 }
 
 function handleLog(res, query) {
@@ -296,7 +343,7 @@ const server = http.createServer(async (req, res) => {
       case 'POST /send':
         return await handleSend(req, res);
       case 'GET /inbox':
-        return handleInbox(res, parsed.searchParams);
+        return handleInbox(req, res, parsed.searchParams);
       case 'GET /log':
         return handleLog(res, parsed.searchParams);
       default:
@@ -309,6 +356,7 @@ const server = http.createServer(async (req, res) => {
 
 function shutdown() {
   save();
+  waiters.slice().forEach((w) => w.finish()); // release parked long-poll clients
   server.close(() => process.exit(0));
   // Force-exit if connections linger.
   setTimeout(() => process.exit(0), 500).unref();

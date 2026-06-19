@@ -42,6 +42,7 @@ skills/agent-tunnel/
   server.js    the broker (Node standard library only)
   start.sh     launch the broker in the background
   stop.sh      stop the broker
+  watch.sh     background long-poll watcher for one agent's inbox
 ```
 
 No build step, no dependencies. Requires Node.js. ngrok is optional, only if an

@@ -118,6 +118,26 @@ for i in $(seq 1 30); do
 done
 ```
 
+### Receiving: on-demand or continuous watch (your choice)
+
+Two ways to take delivery -- pick per situation:
+
+- **On-demand (default).** Call `/inbox` when you want messages (commands above).
+  Best when you only check at natural points, e.g. each time the user asks.
+  Nothing runs between checks.
+- **Continuous watch.** Launch the bundled `watch.sh` in the background; it
+  long-polls and prints each new message the instant it arrives, so you get
+  re-invoked and can relay replies without the user prompting "check the inbox".
+  In Claude Code, run it with Bash `run_in_background`:
+
+  ```sh
+  ID=claude sh ./watch.sh    # from this skill's dir; add PORT= / TUNNEL_TOKEN= if used
+  ```
+
+  While the watcher runs, read new messages from its output and do **not** also
+  call `/inbox` for the same id (the watcher consumes the inbox). Stop it by
+  killing the background process.
+
 See who is connected, or the recent message trail:
 
 ```sh
@@ -133,7 +153,7 @@ curl -s "http://127.0.0.1:8787/log?limit=20"
 | POST | `/subscribe` | `{id, description}` | register or re-identify (idempotent; keeps your cursor) |
 | GET | `/agents` | — | list connected agents |
 | POST | `/send` | `{from, to, text}` | send; `to` = an agent id or `"all"` |
-| GET | `/inbox` | `?id=ID[&peek=true]` | unread for ID; advances cursor (`peek=true` does not) |
+| GET | `/inbox` | `?id=ID[&peek=true][&wait=S]` | unread for ID; advances cursor (`peek=true` does not). `wait=S` long-polls up to S seconds (max 60) for a message instead of returning immediately |
 | GET | `/log` | `?limit=N` | last N messages (default 50) |
 
 Notes:
