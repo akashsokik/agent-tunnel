@@ -11,12 +11,19 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { URL } = require('url');
 
 const HOST = process.env.HOST || '127.0.0.1';
 const PORT = parseInt(process.env.PORT || '8787', 10);
 const STATE_FILE = process.env.TUNNEL_STATE || path.join(__dirname, 'state.json');
 const STARTED_AT = Date.now();
+
+// Optional shared bearer token. When set, every request must present
+// `Authorization: Bearer <TUNNEL_TOKEN>` and the request is trusted regardless
+// of Host/Origin -- this is what makes remote (e.g. ngrok) use safe. When NOT
+// set, the broker enforces a localhost-only, browser-hostile guard instead.
+const TOKEN = process.env.TUNNEL_TOKEN || '';
 
 // ---------------------------------------------------------------------------
 // State
@@ -55,13 +62,53 @@ const isValidId = (s) => typeof s === 'string' && ID_RE.test(s);
 const nowIso = () => new Date().toISOString();
 
 function reply(res, code, obj) {
-  res.writeHead(code, {
-    'content-type': 'application/json',
-    'access-control-allow-origin': '*',
-    'access-control-allow-methods': 'GET,POST,OPTIONS',
-    'access-control-allow-headers': 'content-type',
-  });
+  // Deliberately no `Access-Control-Allow-Origin`. This relay is for
+  // non-browser clients (curl/node); withholding CORS headers means a browser
+  // cannot read responses cross-origin, even if it can fire the request.
+  res.writeHead(code, { 'content-type': 'application/json' });
   res.end(JSON.stringify(obj, null, 2) + '\n');
+}
+
+// Constant-time string comparison for the shared token.
+function safeEqual(a, b) {
+  const ba = Buffer.from(String(a));
+  const bb = Buffer.from(String(b));
+  if (ba.length !== bb.length) return false;
+  return crypto.timingSafeEqual(ba, bb);
+}
+
+// Gatekeeper run before every request (except CORS preflight).
+//   - With TUNNEL_TOKEN set: require a matching bearer token; that token is the
+//     authentication, so remote/proxied Host values are fine.
+//   - Without a token: allow only localhost callers and reject anything that
+//     looks like a cross-origin/cross-site browser request (defeats malicious
+//     web pages and DNS rebinding against the loopback service).
+function authorize(req) {
+  if (TOKEN) {
+    const header = req.headers['authorization'] || '';
+    const presented = header.startsWith('Bearer ') ? header.slice(7) : '';
+    if (!presented || !safeEqual(presented, TOKEN)) {
+      return { ok: false, code: 401, error: 'missing or invalid bearer token' };
+    }
+    return { ok: true };
+  }
+
+  const host = (req.headers['host'] || '').split(':')[0].toLowerCase();
+  if (!['127.0.0.1', 'localhost', '::1', '[::1]'].includes(host)) {
+    return { ok: false, code: 403, error: 'host not allowed; set TUNNEL_TOKEN to expose this broker remotely' };
+  }
+
+  const origin = req.headers['origin'];
+  if (origin && origin !== `http://localhost:${PORT}` && origin !== `http://127.0.0.1:${PORT}`) {
+    return { ok: false, code: 403, error: 'cross-origin requests are not allowed' };
+  }
+
+  const site = req.headers['sec-fetch-site'];
+  if (site && site !== 'same-origin' && site !== 'none') {
+    return { ok: false, code: 403, error: 'cross-site requests are not allowed' };
+  }
+
+  return { ok: true };
 }
 
 function readBody(req) {
@@ -201,12 +248,12 @@ function handleInbox(res, query) {
   );
 
   agent.lastSeen = nowIso();
-  if (!peek) {
-    agent.cursor = state.seq; // everything up to now has been considered
-    save();
-  } else {
-    save(); // persist lastSeen
+  if (!peek && messages.length > 0) {
+    // Advance only to the highest seq actually returned to this caller, so a
+    // message assigned a higher seq later is never silently skipped.
+    agent.cursor = messages[messages.length - 1].seq;
   }
+  save(); // persist cursor / lastSeen
 
   reply(res, 200, { ok: true, id, count: messages.length, messages });
 }
@@ -222,13 +269,16 @@ function handleLog(res, query) {
 // ---------------------------------------------------------------------------
 const server = http.createServer(async (req, res) => {
   try {
+    // CORS preflight: answer without granting cross-origin access so browsers
+    // fail closed. Non-browser clients (curl/node) never send this.
     if (req.method === 'OPTIONS') {
-      res.writeHead(204, {
-        'access-control-allow-origin': '*',
-        'access-control-allow-methods': 'GET,POST,OPTIONS',
-        'access-control-allow-headers': 'content-type',
-      });
+      res.writeHead(204);
       return res.end();
+    }
+
+    const gate = authorize(req);
+    if (!gate.ok) {
+      return reply(res, gate.code, { ok: false, error: gate.error });
     }
 
     const parsed = new URL(req.url, `http://${HOST}:${PORT}`);
@@ -270,6 +320,7 @@ load();
 server.listen(PORT, HOST, () => {
   console.log(`[tunnel] agent-tunnel listening at http://${HOST}:${PORT}`);
   console.log(`[tunnel] state file: ${STATE_FILE}`);
+  console.log(`[tunnel] auth: ${TOKEN ? 'bearer token required (remote-safe)' : 'localhost-only guard (set TUNNEL_TOKEN to expose remotely)'}`);
   console.log(`[tunnel] ${Object.keys(state.agents).length} agent(s), ${state.messages.length} message(s) loaded`);
 });
 

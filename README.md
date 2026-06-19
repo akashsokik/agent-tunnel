@@ -46,3 +46,25 @@ skills/agent-tunnel/
 
 No build step, no dependencies. Requires Node.js. ngrok is optional, only if an
 agent runs on a different machine.
+
+## Security
+
+The broker is unauthenticated but locked to localhost: it binds `127.0.0.1`,
+rejects non-localhost `Host` headers (anti DNS-rebinding), and rejects
+cross-origin `Origin` / cross-site `Sec-Fetch-Site` requests, so a malicious web
+page open in your browser cannot quietly inject messages your agents would act
+on. `curl`/`node` callers are unaffected.
+
+To expose it remotely (e.g. ngrok), set a shared token — this is required, so
+you can't accidentally publish an open relay:
+
+```sh
+TUNNEL_TOKEN="$(head -c 24 /dev/urandom | base64 | tr -d '/+=')" sh ./start.sh
+```
+
+When a token is set, every request must include `Authorization: Bearer <token>`.
+
+Residual assumption with no token: any process running as you on the same
+machine can reach the broker, and senders are not cryptographically verified —
+fine for cooperating agents you control locally. See `skills/agent-tunnel/SKILL.md`
+for the full security model.

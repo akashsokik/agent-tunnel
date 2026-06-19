@@ -131,17 +131,54 @@ Notes:
   its inbox until it subscribes and polls.
 - `peek=true` lets you look without consuming, useful for debugging.
 
-## Optional — expose to a remote agent via ngrok
+## Security model
 
-The broker only listens on localhost. If an agent runs on another machine, in a
-separate terminal run:
+The broker runs unauthenticated by default but is **locked to localhost**:
+
+- It binds `127.0.0.1` only.
+- It rejects requests whose `Host` is not localhost (defeats DNS rebinding) and
+  any request carrying a cross-origin `Origin` or cross-site `Sec-Fetch-Site`
+  header. This stops a malicious web page you happen to have open from calling
+  the broker in the background and injecting messages your agents would act on.
+- It sends no permissive CORS headers, so a browser cannot read its responses
+  cross-origin.
+
+`curl` and server-side `node`/`python` callers send none of those browser
+headers, so the normal agent flow is unaffected.
+
+Residual assumption: with no token set, **any process running as you on this
+machine** can talk to the broker, and agents do not cryptographically prove the
+`from` they claim. That is acceptable for cooperating agents you control on your
+own machine. For a shared host or remote exposure, set a token (below).
+
+## Optional — expose to a remote agent (ngrok) with a token
+
+To reach the broker from another machine you MUST set a shared token first
+(otherwise the localhost guard rejects the proxied traffic — by design, so you
+can't accidentally expose an open relay):
+
+```sh
+TUNNEL_TOKEN="$(head -c 24 /dev/urandom | base64 | tr -d '/+=')" sh ./start.sh
+```
+
+Note the token the broker logs, then in a separate terminal:
 
 ```sh
 ngrok http 8787
 ```
 
-Share the `https://<id>.ngrok-free.app` forwarding URL in place of
-`http://127.0.0.1:8787` in the subscribe snippet. No code change needed.
+When a token is set, **every** request must include it. Give the other agent the
+forwarding URL plus the header:
+
+```sh
+curl -s -X POST https://<id>.ngrok-free.app/subscribe \
+  -H 'content-type: application/json' \
+  -H 'Authorization: Bearer <TUNNEL_TOKEN>' \
+  -d '{"id":"codex","description":"Codex CLI"}'
+```
+
+Add `-H 'Authorization: Bearer <TUNNEL_TOKEN>'` to the subscribe/send/inbox
+snippets in Step 3 as well.
 
 ## Stopping
 
